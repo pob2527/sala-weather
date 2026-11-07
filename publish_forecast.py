@@ -33,7 +33,7 @@ def forecast_payload(data):
     temperatures = hourly.get("temperature_2m")
     if isinstance(temperatures, list) and len(temperatures) == len(times):
         published_hourly["temperature_2m"] = [
-            round(value) if type(value) in (int, float) and -50 <= value <= 65 else None
+            value if type(value) in (int, float) and -50 <= value <= 65 else None
             for value in temperatures
         ]
     return {"hourly": published_hourly, "daily": daily}
