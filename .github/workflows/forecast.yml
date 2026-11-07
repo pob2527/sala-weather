@@ -2,7 +2,7 @@ name: Publish Bangkok forecast
 on:
   workflow_dispatch:
   schedule:
-    - cron: '17 21 * * *'
+    - cron: '17 3,9,15,21 * * *'
 
 permissions:
   contents: read
