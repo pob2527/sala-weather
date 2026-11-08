@@ -4,7 +4,7 @@ from urllib.request import urlopen
 
 FORECAST_URL = (
     "https://api.open-meteo.com/v1/forecast?latitude=13.7563&longitude=100.5018"
-    "&hourly=weather_code,apparent_temperature&daily=sunrise,sunset&forecast_days=3"
+    "&hourly=weather_code,temperature_2m&daily=sunrise,sunset&forecast_days=3"
     "&forecast_hours=48&timezone=Asia%2FBangkok&timeformat=unixtime"
 )
 
@@ -30,9 +30,9 @@ def forecast_payload(data):
         if day != dates[0] + i * 86400 or not day < rise < sunset < day + 86400:
             raise ValueError("Invalid Bangkok solar schedule")
     published_hourly = {"time": times, "weather_code": codes}
-    temperatures = hourly.get("apparent_temperature")
+    temperatures = hourly.get("temperature_2m")
     if isinstance(temperatures, list) and len(temperatures) == len(times):
-        published_hourly["apparent_temperature"] = [
+        published_hourly["temperature_2m"] = [
             value if type(value) in (int, float) and -50 <= value <= 65 else None
             for value in temperatures
         ]
