@@ -1,5 +1,7 @@
 import json
 from pathlib import Path
+from time import sleep
+from urllib.error import URLError
 from urllib.request import urlopen
 
 FORECAST_URL = (
@@ -40,9 +42,23 @@ def forecast_payload(data):
     return {"hourly": published_hourly, "daily": daily}
 
 
+def download_forecast():
+    retry_delays = (5, 15)
+    for attempt in range(len(retry_delays) + 1):
+        try:
+            with urlopen(FORECAST_URL, timeout=20) as response:
+                return json.load(response)
+        except (TimeoutError, URLError) as error:
+            reason = error.reason if isinstance(error, URLError) else error
+            if not isinstance(reason, TimeoutError) or attempt == len(retry_delays):
+                raise
+            delay = retry_delays[attempt]
+            print(f"Open-Meteo request timed out. Retrying in {delay} seconds.", flush=True)
+            sleep(delay)
+
+
 def main():
-    with urlopen(FORECAST_URL, timeout=20) as response:
-        payload = forecast_payload(json.load(response))
+    payload = forecast_payload(download_forecast())
     output = Path("public")
     output.mkdir(exist_ok=True)
     (output / "weather.json").write_text(
