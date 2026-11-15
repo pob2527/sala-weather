@@ -1,4 +1,5 @@
-name: Publish Bangkok forecast
+name: Sala Live Bangkok Forecast
+run-name: ${{ github.event.schedule == '17 0,6,12,18 * * *' && 'Check Bangkok forecast after the regular run' || 'Refresh Sala live Bangkok forecast' }}
 on:
   workflow_dispatch:
   schedule:
