@@ -1,11 +1,6 @@
 name: Publish Bangkok forecast
 on:
   workflow_dispatch:
-    inputs:
-      verify_backup:
-        description: Verify MET Norway without publishing
-        type: boolean
-        default: false
   schedule:
     # 04:17, 10:17, 16:17, and 22:17 Bangkok time (UTC+7).
     - cron: '17 3,9,15,21 * * *'
@@ -32,22 +27,7 @@ jobs:
           path: .forecast-cache
           key: sala-met-forecast-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: sala-met-forecast-
-      - name: Verify MET Norway backup
-        if: inputs.verify_backup == true
-        run: |
-          python3 -B - <<'PY'
-          from datetime import datetime
-          from publish_forecast import BANGKOK, download_met_forecast, forecast_payload, met_forecast
-
-          now = datetime.now(BANGKOK)
-          payload = forecast_payload(met_forecast(download_met_forecast(now), now), now)
-          hours = payload["hourly"]["time"]
-          start = datetime.fromtimestamp(hours[0], BANGKOK).isoformat()
-          end = datetime.fromtimestamp(hours[-1], BANGKOK).isoformat()
-          print(f"Validated MET Norway for Bangkok: {len(hours)} hours from {start} to {end}, both temperatures, and three solar days.")
-          PY
       - run: python3 publish_forecast.py
-        if: inputs.verify_backup != true
         env:
           SALA_ENABLE_MET_NORWAY: 'true'
       - uses: actions/cache/save@v4
@@ -56,8 +36,6 @@ jobs:
           path: .forecast-cache
           key: sala-met-forecast-${{ github.run_id }}-${{ github.run_attempt }}
       - uses: actions/upload-pages-artifact@v4
-        if: inputs.verify_backup != true
         with:
           path: public
       - uses: actions/deploy-pages@v4
-        if: inputs.verify_backup != true
