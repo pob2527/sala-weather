@@ -5,11 +5,14 @@ from calendar import isleap
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from http.client import HTTPException
-from math import acos, cos, degrees, radians, sin, tau
+from io import BytesIO
+from math import acos, cos, degrees, exp, radians, sin, tau
 from pathlib import Path
 from time import sleep
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+from xml.etree import ElementTree
+from zipfile import BadZipFile, ZipFile
 
 LATITUDE, LONGITUDE = 13.7563, 100.5018
 BANGKOK = timezone(timedelta(hours=7))
@@ -23,12 +26,21 @@ MET_URL = (
     f"?lat={LATITUDE}&lon={LONGITUDE}"
 )
 MET_CACHE = Path(".forecast-cache/met-norway.json")
+DWD_URL = (
+    "https://opendata.dwd.de/weather/local_forecasts/mos/MOSMIX_L/"
+    "single_stations/48455/kml/MOSMIX_L_LATEST_48455.kmz"
+)
+PUBLIC_URL = "https://pob2527.github.io/sala-weather/weather.json"
 OPEN_METEO_CREDIT = '<a href="https://open-meteo.com/">Open-Meteo</a>'
 MET_CREDIT = (
     '<a href="https://www.met.no/en">MET Norway</a> · '
     '<a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a> · '
     'Weather categories adapted for Sala. '
     '<a href="https://gml.noaa.gov/grad/solcalc/solareqns.PDF">Sun times calculated locally</a>.'
+)
+DWD_CREDIT = (
+    '<a href="https://opendata.dwd.de/weather/local_forecasts/mos/">Deutscher Wetterdienst (DWD)</a> · '
+    'Bangkok station 48455. Weather, feels-like and sunrise/sunset adapted for Sala.'
 )
 
 
@@ -126,10 +138,19 @@ def met_forecast(data, now):
     return {"hourly": hourly, "daily": solar_schedule(now)}
 
 
-def download_met_forecast(now):
+def download_met_forecast():
     cached = json.loads(MET_CACHE.read_text(encoding="utf-8")) if MET_CACHE.exists() else {}
-    if now.timestamp() < cached.get("retry_at", 0):
-        return cached["data"]
+    requested_at = datetime.now(timezone.utc).timestamp()
+    if requested_at < cached.get("retry_at", 0):
+        if "data" in cached:
+            print("Using the cached MET Norway response.", flush=True)
+            return cached["data"]
+        raise ValueError("MET Norway request interval has not elapsed")
+    # Keep the request interval across scheduled runs even when the network call fails.
+    retry_at = requested_at + 3 * 3600
+    MET_CACHE.parent.mkdir(exist_ok=True)
+    cached["retry_at"] = retry_at
+    MET_CACHE.write_text(json.dumps(cached), encoding="utf-8")
     headers = {
         "User-Agent": "SalaWeather/1.0 (+https://github.com/pob2527/sala-weather)",
         "Accept-Encoding": "gzip",
@@ -146,20 +167,76 @@ def download_met_forecast(now):
             response_headers = response.headers
     except HTTPError as error:
         if error.code != 304 or "data" not in cached:
+            if error.code in (429, 503) and error.headers.get("Retry-After"):
+                delay = error.headers["Retry-After"]
+                eligible = requested_at + int(delay) if delay.isdecimal() else parsedate_to_datetime(delay).timestamp()
+                cached["retry_at"] = max(retry_at, eligible)
+                MET_CACHE.write_text(json.dumps(cached), encoding="utf-8")
             raise
         data = cached["data"]
         response_headers = error.headers
     expires = response_headers.get("Expires")
-    retry_at = now.timestamp() + 3 * 3600
     if expires:
         retry_at = max(retry_at, parsedate_to_datetime(expires).timestamp())
-    MET_CACHE.parent.mkdir(exist_ok=True)
     MET_CACHE.write_text(json.dumps({
         "data": data,
         "last_modified": response_headers.get("Last-Modified", cached.get("last_modified")),
         "retry_at": retry_at,
     }), encoding="utf-8")
     return data
+
+
+def dwd_forecast(archive, now):
+    kml = {"kml": "http://www.opengis.net/kml/2.2",
+           "dwd": "https://opendata.dwd.de/weather/lib/pointforecast_dwd_extension_V1_0.xsd"}
+    with ZipFile(BytesIO(archive)) as package:
+        entry, = package.infolist()
+        if not entry.filename.endswith("_48455.kml") or entry.file_size > 2_000_000:
+            raise ValueError("Unexpected DWD Bangkok station archive")
+        root = ElementTree.fromstring(package.read(entry))
+    issue = datetime.fromisoformat(root.findtext(".//dwd:IssueTime", namespaces=kml))
+    if not timedelta(0) <= now - issue < timedelta(hours=12):
+        raise ValueError("DWD Bangkok forecast is stale")
+    station = root.find(".//kml:Placemark", kml)
+    if station.findtext("kml:name", namespaces=kml) != "48455":
+        raise ValueError("Unexpected DWD station")
+    times = [
+        int(datetime.fromisoformat(node.text).timestamp())
+        for node in root.findall(".//dwd:ForecastTimeSteps/dwd:TimeStep", kml)
+    ]
+    name_attribute = "{" + kml["dwd"] + "}elementName"
+    fields = {
+        node.attrib[name_attribute]: node.findtext("dwd:value", namespaces=kml).split()
+        for node in station.findall(".//dwd:Forecast", kml)
+        if node.attrib[name_attribute] in ("TTT", "Td", "FF", "N", "RR1c")
+    }
+    start = times.index(int(now.timestamp()) // 3600 * 3600)
+    end = min(start + 48, len(times) - 1, len(fields["RR1c"]) - 1)
+    hourly = {"time": times[start:end], "weather_code": [], "temperature_2m": [], "apparent_temperature": []}
+    for i in range(start, end):
+        temperature = float(fields["TTT"][i]) - 273.15
+        dewpoint = float(fields["Td"][i]) - 273.15
+        wind = float(fields["FF"][i])
+        cloud = float(fields["N"][i])
+        # DWD stamps accumulated rain at the end of the hour.
+        rain = float(fields["RR1c"][i + 1])
+        if not (-60 <= dewpoint <= temperature + 1 and 0 <= wind <= 100
+                and 0 <= cloud <= 100 and 0 <= rain <= 200):
+            raise ValueError("Invalid DWD weather reading")
+        # Steadman shade apparent temperature, using vapour pressure from dewpoint.
+        vapour_pressure = 6.105 * exp(17.27 * dewpoint / (237.7 + dewpoint))
+        hourly["temperature_2m"].append(round(temperature, 1))
+        hourly["apparent_temperature"].append(round(temperature + 0.33 * vapour_pressure - 0.70 * wind - 4, 1))
+        hourly["weather_code"].append(61 if rain >= 0.1 else 2 if cloud >= 50 else 0)
+    return {"hourly": hourly, "daily": solar_schedule(now)}
+
+
+def download_dwd_forecast(now):
+    with urlopen(DWD_URL, timeout=20) as response:
+        archive = response.read(256_001)
+    if len(archive) > 256_000:
+        raise ValueError("DWD Bangkok station archive is too large")
+    return forecast_payload(dwd_forecast(archive, now), now)
 
 
 def download_forecast(now):
@@ -181,14 +258,44 @@ def download_forecast(now):
             if os.environ.get("SALA_ENABLE_MET_NORWAY") != "true":
                 raise
             break
-    print("Using MET Norway for the Bangkok forecast.", flush=True)
-    data = met_forecast(download_met_forecast(now), now)
-    return forecast_payload(data, now), "MET Norway", MET_CREDIT
+    print("Trying MET Norway for the Bangkok forecast.", flush=True)
+    try:
+        data = met_forecast(download_met_forecast(), now)
+        return forecast_payload(data, now), "MET Norway", MET_CREDIT
+    except (OSError, HTTPException, ValueError, KeyError, TypeError, EOFError) as error:
+        print(f"MET Norway unavailable: {error}", flush=True)
+    print("Trying DWD Bangkok station 48455.", flush=True)
+    try:
+        return download_dwd_forecast(now), "Deutscher Wetterdienst (DWD)", DWD_CREDIT
+    except (BadZipFile, ElementTree.ParseError, OSError, HTTPException, ValueError, KeyError,
+            TypeError, AttributeError, IndexError) as error:
+        raise RuntimeError("All three Bangkok forecast sources failed") from error
+
+
+def regular_run_published(now):
+    # Retry slots follow the regular runs at 03:17, 09:17, 15:17, and 21:17 UTC.
+    anchor = 3 * 3600 + 17 * 60
+    slot = (int(now.timestamp()) - anchor) // (6 * 3600) * (6 * 3600) + anchor
+    try:
+        with urlopen(f"{PUBLIC_URL}?retry_slot={slot}", timeout=10) as response:
+            published = json.load(response)
+        times = published["hourly"]["time"]
+        return (
+            slot <= published["published_at"] <= now.timestamp()
+            and times[0] <= now.timestamp() < times[-1] + 3600
+        )
+    except (OSError, HTTPException, ValueError, KeyError, TypeError, IndexError):
+        return False
 
 
 def main():
-    payload, source, credit = download_forecast(datetime.now(BANGKOK))
+    now = datetime.now(BANGKOK)
+    if os.environ.get("SALA_RETRY_RUN") == "true" and regular_run_published(now):
+        print("The last scheduled slot already has a valid published forecast.", flush=True)
+        return
+    payload, source, credit = download_forecast(now)
     payload["source"] = source
+    payload["published_at"] = int(now.timestamp())
     output = Path("public")
     output.mkdir(exist_ok=True)
     (output / "weather.json").write_text(
