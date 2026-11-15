@@ -1,6 +1,6 @@
 import json
 from pathlib import Path
-from time import sleep
+from subprocess import check_output
 from urllib.error import URLError
 from urllib.request import urlopen
 
@@ -43,18 +43,24 @@ def forecast_payload(data):
 
 
 def download_forecast():
-    retry_delays = (5, 15)
-    for attempt in range(len(retry_delays) + 1):
-        try:
-            with urlopen(FORECAST_URL, timeout=20) as response:
-                return json.load(response)
-        except (TimeoutError, URLError) as error:
-            reason = error.reason if isinstance(error, URLError) else error
-            if not isinstance(reason, TimeoutError) or attempt == len(retry_delays):
-                raise
-            delay = retry_delays[attempt]
-            print(f"Open-Meteo request timed out. Retrying in {delay} seconds.", flush=True)
-            sleep(delay)
+    try:
+        with urlopen(FORECAST_URL, timeout=20) as response:
+            return json.load(response)
+    except (TimeoutError, URLError) as error:
+        reason = error.reason if isinstance(error, URLError) else error
+        if not isinstance(reason, TimeoutError):
+            raise
+
+    # A smaller TLS hello and IPv4 provide a different path after a handshake timeout.
+    print("Open-Meteo timed out. Trying IPv4 with curl.", flush=True)
+    response = check_output([
+        "curl", "--silent", "--show-error", "--fail",
+        "--ipv4", "--curves", "X25519:P-256",
+        "--connect-timeout", "12", "--max-time", "25",
+        "--retry", "2", "--retry-connrefused", "--retry-max-time", "60",
+        FORECAST_URL,
+    ], timeout=90)
+    return json.loads(response)
 
 
 def main():
