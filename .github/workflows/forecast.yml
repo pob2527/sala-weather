@@ -1,11 +1,6 @@
 name: Publish Bangkok forecast
 on:
   workflow_dispatch:
-    inputs:
-      verify_dwd:
-        description: Verify DWD without publishing
-        type: boolean
-        default: false
   schedule:
     # 04:17, 10:17, 16:17, and 22:17 Bangkok time (UTC+7).
     - cron: '17 3,9,15,21 * * *'
@@ -34,22 +29,7 @@ jobs:
           path: .forecast-cache
           key: sala-met-forecast-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: sala-met-forecast-
-      - name: Verify DWD Bangkok backup
-        if: inputs.verify_dwd == true
-        run: |
-          python3 -B - <<'PY'
-          from datetime import datetime
-          from publish_forecast import BANGKOK, download_dwd_forecast
-
-          now = datetime.now(BANGKOK)
-          forecast = download_dwd_forecast(now)
-          hours = forecast['hourly']['time']
-          start = datetime.fromtimestamp(hours[0], BANGKOK).isoformat()
-          end = datetime.fromtimestamp(hours[-1], BANGKOK).isoformat()
-          print(f"Validated DWD Bangkok station 48455: {len(hours)} hours from {start} to {end}, both temperatures and three solar days.")
-          PY
       - run: python3 publish_forecast.py
-        if: inputs.verify_dwd != true
         env:
           SALA_ENABLE_MET_NORWAY: 'true'
           SALA_RETRY_RUN: ${{ github.event.schedule == '17 0,6,12,18 * * *' }}
