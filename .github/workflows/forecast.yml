@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   publish:
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     timeout-minutes: 5
     environment: github-pages
     steps:
