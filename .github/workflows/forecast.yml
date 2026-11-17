@@ -52,7 +52,8 @@ jobs:
     needs: prepare
     if: needs.prepare.outputs.artifact_id != ''
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    # Allow time for artifact discovery and the Pages action's 10-minute timeout.
+    timeout-minutes: 12
     permissions:
       actions: read
       pages: write
