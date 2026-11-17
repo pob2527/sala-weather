@@ -8,20 +8,22 @@ on:
     # Check once three hours after each regular slot. Publish only if that slot failed.
     - cron: '17 0,6,12,18 * * *'
 
-permissions:
-  contents: read
-  pages: write
-  id-token: write
+permissions: {}
 
 concurrency:
   group: sala-weather-pages
   cancel-in-progress: false
 
 jobs:
-  publish:
+  prepare:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    environment: github-pages
+    permissions:
+      contents: read
+      pages: read
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact_id }}
+      artifact_name: ${{ format('github-pages-{0}', github.run_attempt) }}
     steps:
       - uses: actions/checkout@v6
       - uses: actions/configure-pages@v6
@@ -40,8 +42,46 @@ jobs:
           path: .forecast-cache
           key: sala-met-forecast-${{ github.run_id }}-${{ github.run_attempt }}
       - uses: actions/upload-pages-artifact@v5
+        id: upload
         if: hashFiles('public/weather.json') != ''
         with:
+          name: ${{ format('github-pages-{0}', github.run_attempt) }}
           path: public
+
+  deploy:
+    needs: prepare
+    if: needs.prepare.outputs.artifact_id != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Wait for the uploaded Pages artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ needs.prepare.outputs.artifact_id }}
+          ARTIFACT_NAME: ${{ needs.prepare.outputs.artifact_name }}
+        run: |
+          # Pages can briefly see an empty artifact list just after upload.
+          for delay in 0 3 6 12; do
+            sleep "$delay"
+            if artifacts=$(timeout 8s gh api --method GET \
+              "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts" \
+              -f name="$ARTIFACT_NAME") && jq -e --arg id "$ARTIFACT_ID" --arg name "$ARTIFACT_NAME" \
+              'any(.artifacts[]; (.id | tostring) == $id and .name == $name and .expired == false)' \
+              <<< "$artifacts" > /dev/null; then
+              echo "Pages artifact $ARTIFACT_ID is visible."
+              exit 0
+            fi
+          done
+          echo "::error::GitHub did not list the uploaded Pages artifact $ARTIFACT_ID."
+          exit 1
       - uses: actions/deploy-pages@v5
-        if: hashFiles('public/weather.json') != ''
+        id: deployment
+        with:
+          artifact_name: ${{ needs.prepare.outputs.artifact_name }}
