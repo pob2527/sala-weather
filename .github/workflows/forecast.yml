@@ -19,13 +19,13 @@ concurrency:
 
 jobs:
   publish:
-    runs-on: macos-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     environment: github-pages
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/configure-pages@v5
-      - uses: actions/cache/restore@v4
+      - uses: actions/checkout@v6
+      - uses: actions/configure-pages@v6
+      - uses: actions/cache/restore@v5
         with:
           path: .forecast-cache
           key: sala-met-forecast-${{ github.run_id }}-${{ github.run_attempt }}
@@ -34,14 +34,14 @@ jobs:
         env:
           SALA_ENABLE_MET_NORWAY: 'true'
           SALA_RETRY_RUN: ${{ github.event.schedule == '17 0,6,12,18 * * *' }}
-      - uses: actions/cache/save@v4
+      - uses: actions/cache/save@v5
         if: always() && hashFiles('.forecast-cache/met-norway.json') != ''
         with:
           path: .forecast-cache
           key: sala-met-forecast-${{ github.run_id }}-${{ github.run_attempt }}
-      - uses: actions/upload-pages-artifact@v4
+      - uses: actions/upload-pages-artifact@v5
         if: hashFiles('public/weather.json') != ''
         with:
           path: public
-      - uses: actions/deploy-pages@v4
+      - uses: actions/deploy-pages@v5
         if: hashFiles('public/weather.json') != ''
